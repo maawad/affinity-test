@@ -1,11 +1,12 @@
 # Test CUDA MPS for a single user
 
+The code contains a simple Message passing (MP) [example](https://github.com/maawad/affinity-test/blob/main/affinity_test.cu#L154:L227) where one kernel is a [producer](https://github.com/maawad/affinity-test/blob/main/affinity_test.cu#L125:L136) and the other is a [consumer](https://github.com/maawad/affinity-test/blob/main/affinity_test.cu#L137:L152). The code also contains a [simple test](https://github.com/maawad/affinity-test/blob/main/affinity_test.cu#L52:L109) (copy kernel).
 
 See [Multi-Process Service](https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Process_Service_Overview.pdf) for more details.
 
 # How to test:
 
-1. First start the  MPS control daemon by exporting the following:
+1. First, start the  MPS control daemon by exporting the following:
 ```bash
 export CUDA_VISIBLE_DEVICES=0
 export CUDA_MPS_PIPE_DIRECTORY=/home/username/mps/mps
@@ -13,7 +14,7 @@ export CUDA_MPS_LOG_DIRECTORY=/home/username/mps/log
 # or any location that are accessible to the user
 ```
 
-2. After starting the daemon `nvidia-smi` should show something like this:
+2. After starting the daemon, `nvidia-smi` should show something like this:
 
 ```bash
 $ nvidia-smi
@@ -39,10 +40,12 @@ Wed Nov 10 20:50:01 2021
 +-----------------------------------------------------------------------------+
 ```
 
-3. Build and run:
+3. Clone, build, and run:
 ```bash
-mkdir build
-cd build
+git clone https://github.com/maawad/affinity-test.git
+cd affinity-test
+mkdir build && cd build
+cmake ..
 make
 ./affinity_test
 ```
@@ -69,7 +72,7 @@ terminate called without an active exception
 Aborted
 ```
 
-4. Checking the run on the profiler:
+4. Profile:
 
 ```bash
 nsys profile -o nsys_profile ./affinity_test
@@ -79,28 +82,24 @@ nsys profile -o nsys_profile ./affinity_test
 
 ![](/figs/nsys-output.PNG)
 
-The test code contains a simple Message passing (MP) example. Where one kernel is a producer and the other is a consumer.
 
-
-The test also contains a simple test (copy kernel). Here is the SM utilization for the simple test on `nvprof`:
-
-Using one SM (notice that the requested one SM was rounded up to two):
-![](/figs/2sms-load.PNG)
-
-
-Using 50% of the SMs (notice that the SMs are assigned randomly):
-![](/figs/50psms-load.PNG)
-
-To test `nvprof` profile the kernel as follows:
+6. For the copy kernel (commented out), first, recompile and profile using `nvprof`:
 ```bash
 nvprof --analysis-metrics -f -o affinity_test.nvvp  ./affinity_test
 ```
+
 Then run the `nvvp` on the host machine. Here is how to launch it on Windows:
 ```
 nvvp -vm "C:\Program Files\Java\jre1.8.0_291\bin\java.exe"
 ```
 
-6. Shut the daemon down after finishing:
+Using one SM (notice that the requested one SM was rounded up to two):
+![](/figs/2sms-load.PNG)
+
+Using 50% of the SMs (notice that the SMs are assigned randomly):
+![](/figs/50psms-load.PNG)
+
+7. Shut the daemon down after finishing:
 ```bash
  echo quit | nvidia-cuda-mps-control
 ```
