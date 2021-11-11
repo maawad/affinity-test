@@ -100,5 +100,8 @@ Then run the `nvvp` on the host machine. Here is how to launch it on Windows:
 nvvp -vm "C:\Program Files\Java\jre1.8.0_291\bin\java.exe"
 ```
 
-
+6. Shut the daemon down after finishing:
+```bash
+ echo quit | nvidia-cuda-mps-control
+```
 
