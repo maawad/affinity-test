@@ -108,3 +108,11 @@ Using 50% of the SMs (notice that the SMs are assigned randomly):
  echo quit | nvidia-cuda-mps-control
 ```
 
+
+# Benchmark
+
+The following figure shows the results of a simple copy kernel benchmark using different SM count. The result is relative to a reference kernel that uses the full machine.
+1. x-axis: the ratio of used SMs to the full machine SMs
+2. y-axis: the ratio between the elapsed time using the limited number of SM and the reference implemenation
+
+![](/figs/bench.png)
