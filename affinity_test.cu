@@ -10,7 +10,6 @@
 // C++
 #include <assert.h>
 #include <cstdint>
-#include <fstream>
 #include <iostream>
 #include <numeric>
 #include <thread>
@@ -24,37 +23,6 @@
       std::terminate();                                                               \
     }                                                                                 \
   } while (0)
-
-struct gpu_timer {
-  gpu_timer(cudaStream_t stream = 0) : start_{}, stop_{}, stream_(stream) {
-    cudaEventCreate(&start_);
-    cudaEventCreate(&stop_);
-  }
-  void start_timer() { cudaEventRecord(start_, stream_); }
-  void stop_timer() { cudaEventRecord(stop_, stream_); }
-  float get_elapsed_ms() {
-    compute_ms();
-    return elapsed_time_;
-  }
-
-  float get_elapsed_s() {
-    compute_ms();
-    return elapsed_time_ * 0.001f;
-  }
-  ~gpu_timer() {
-    cudaEventDestroy(start_);
-    cudaEventDestroy(stop_);
-  };
-
- private:
-  void compute_ms() {
-    cudaEventSynchronize(stop_);
-    cudaEventElapsedTime(&elapsed_time_, start_, stop_);
-  }
-  cudaEvent_t start_, stop_;
-  cudaStream_t stream_;
-  float elapsed_time_ = 0.0f;
-};
 
 CUdevice get_cuda_device(const int device_id, int& sms_count) {
   CUdevice device;
@@ -88,80 +56,14 @@ __global__ void kernel(uint32_t* d_in, uint32_t* d_out, int count) {
   }
 }
 
-struct bench_result {
-  unsigned requested_sms;
-  unsigned acquired_sms;
-  unsigned total_sms;
-  float time_s;
-
-  bench_result& operator+=(const bench_result& rhs) {
-    requested_sms += rhs.requested_sms;
-    acquired_sms += rhs.acquired_sms;
-    total_sms += rhs.total_sms;
-    time_s += rhs.time_s;
-    return *this;
-  }
-
-  template <typename T>
-  bench_result& operator/=(const T& rhs) {
-    requested_sms /= rhs;
-    acquired_sms /= rhs;
-    total_sms /= rhs;
-    time_s /= rhs;
-    return *this;
-  }
-};
-
-std::ostream& operator<<(std::ostream& os, const bench_result& res) {
-  std::cout << "requested_sms = " << res.requested_sms << '\n';
-  std::cout << "acquired_sms = " << res.acquired_sms << '\n';
-  std::cout << "total_sms = " << res.total_sms << '\n';
-  std::cout << "time_s = " << res.time_s << '\n';
-  return os;
-}
-
-float one_kernel_reference() {
-  uint32_t count = 100'000'000;
-  uint32_t* d_in;
-  uint32_t* d_out;
-  std::size_t bytes_count = sizeof(uint32_t) * count;
-  cuda_try(cudaMalloc(&d_in, bytes_count));
-  cuda_try(cudaMalloc(&d_out, bytes_count));
-  cuda_try(cudaMemset(d_in, 0xff, bytes_count));
-  cuda_try(cudaMemset(d_out, 0x00, bytes_count));
-
-  const uint32_t block_size = 128;
-  const uint32_t num_blocks = 512;
-
-  gpu_timer timer;
-  timer.start_timer();
-  kernel<<<num_blocks, block_size>>>(d_in, d_out, count);
-  timer.stop_timer();
-  cuda_try(cudaDeviceSynchronize());
-
-  float elapsed_seconds = timer.get_elapsed_s();
-  std::vector<uint32_t> h_out(count);
-
-  cuda_try(cudaMemcpy(h_out.data(), d_out, bytes_count, cudaMemcpyDeviceToHost));
-
-  for (const auto& k : h_out) {
-    assert(k == 0xffffffff);
-  }
-
-  cuda_try(cudaFree(d_in));
-  cuda_try(cudaFree(d_out));
-
-  std::cout << "Ok\n";
-
-  return elapsed_seconds;
-}
-
-bench_result one_kernel_test(float load) {
+void one_kernel_test(int argc, char** argv) {
   int device_id = 0;
   int sms_count = 0;
   CUdevice dev = get_cuda_device(device_id, sms_count);
 
+  float load = 0.5f;
   unsigned load_sms = static_cast<unsigned>(load * sms_count);
+
   CUcontext ctx;
   CUexecAffinityParam_v1 affinity_param{
       CUexecAffinityType::CU_EXEC_AFFINITY_TYPE_SM_COUNT, load_sms};
@@ -188,13 +90,9 @@ bench_result one_kernel_test(float load) {
   const uint32_t block_size = 128;
   const uint32_t num_blocks = 512;
 
-  gpu_timer timer;
-  timer.start_timer();
   kernel<<<num_blocks, block_size>>>(d_in, d_out, count);
-  timer.stop_timer();
   cuda_try(cudaDeviceSynchronize());
 
-  float elapsed_seconds = timer.get_elapsed_s();
   std::vector<uint32_t> h_out(count);
 
   cuda_try(cudaMemcpy(h_out.data(), d_out, bytes_count, cudaMemcpyDeviceToHost));
@@ -208,8 +106,6 @@ bench_result one_kernel_test(float load) {
   cuda_try(cuCtxDestroy(ctx));
 
   std::cout << "Ok\n";
-
-  return {load_sms, acquired_sms, (unsigned)sms_count, elapsed_seconds};
 }
 
 template <typename T>
@@ -330,39 +226,7 @@ void test_producer_consumer(int argc, char** argv) {
   cuda_try(cuCtxDestroy(consumer_ctx));
 }
 
-void bench(int argc, char** argv) {
-  int num_experiments = (argc >= 2) ? std::atoi(argv[1]) : 10;
-  std::vector<float> loads_vector{
-      0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f};
-
-  std::fstream output("bench.csv", std::ios::out);
-
-  float refence_time = one_kernel_reference();
-  std::cout << "refence_time = " << refence_time << std::endl;
-  std::vector<bench_result> load_results(loads_vector.size(), {0, 0, 0, 0});
-
-  for (std::size_t load_index = 0; load_index < loads_vector.size(); load_index++) {
-    std::cout << "Benchmarking load = " << loads_vector[load_index] << '\n';
-    for (int i = 0; i < num_experiments; i++) {
-      auto res = one_kernel_test(loads_vector[load_index]);
-      load_results[load_index] += res;
-    }
-    std::cout << load_results[load_index];
-    load_results[load_index] /= num_experiments;
-    std::cout << load_results[load_index];
-  }
-
-  output << "acquired_sms, requested_sms, time_seconds, pct,\n";
-  for (std::size_t load_index = 0; load_index < loads_vector.size(); load_index++) {
-    output << load_results[load_index].requested_sms << ',';
-    output << load_results[load_index].acquired_sms << ',';
-    output << load_results[load_index].time_s << ',';
-    output << refence_time / load_results[load_index].time_s * 100 << ',';
-    output << '\n';
-  }
-}
 int main(int argc, char** argv) {
   // one_kernel_test(argc, argv);
-  // test_producer_consumer(argc, argv);
-  bench(argc, argv);
+  test_producer_consumer(argc, argv);
 }
