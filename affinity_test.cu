@@ -212,6 +212,35 @@ bench_result one_kernel_test(float load) {
   return {load_sms, acquired_sms, (unsigned)sms_count, elapsed_seconds};
 }
 
+void test_valid_sm_configs() {
+  int device_id = 0;
+  int sms_count = 0;
+  CUdevice dev = get_cuda_device(device_id, sms_count);
+
+  std::cout << "requested -> acquired \n";
+
+  for (unsigned load_sms = 1; load_sms <= sms_count; load_sms++) {
+    CUcontext ctx;
+    CUexecAffinityParam_v1 affinity_param{
+        CUexecAffinityType::CU_EXEC_AFFINITY_TYPE_SM_COUNT, load_sms};
+    auto flags = CUctx_flags::CU_CTX_SCHED_AUTO;
+
+    cuda_try(cuCtxCreate_v3(&ctx, &affinity_param, 1, flags, dev));
+
+    CUexecAffinityParam acquired_affinity_param;
+    cuda_try(
+        cuCtxGetExecAffinity(&acquired_affinity_param, CU_EXEC_AFFINITY_TYPE_SM_COUNT));
+    unsigned acquired_sms = acquired_affinity_param.param.smCount.val;
+
+    std::cout << load_sms;
+    std::cout << ",";
+    std::cout << acquired_sms;
+    std::cout << "\n";
+
+    cuda_try(cuCtxDestroy(ctx));
+  }
+}
+
 template <typename T>
 __device__ inline T load_acquire(T* ptr) {
   T old;
@@ -364,5 +393,6 @@ void bench(int argc, char** argv) {
 int main(int argc, char** argv) {
   // one_kernel_test(argc, argv);
   // test_producer_consumer(argc, argv);
-  bench(argc, argv);
+  // bench(argc, argv);
+  test_valid_sm_configs();
 }
