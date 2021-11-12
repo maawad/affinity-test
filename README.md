@@ -6,12 +6,16 @@ See [Multi-Process Service](https://docs.nvidia.com/deploy/pdf/CUDA_Multi_Proces
 
 # How to test:
 
-1. First, start the  MPS control daemon by exporting the following:
+1. First, set the following environment variables:
 ```bash
 export CUDA_VISIBLE_DEVICES=0
 export CUDA_MPS_PIPE_DIRECTORY=/home/username/mps/mps
 export CUDA_MPS_LOG_DIRECTORY=/home/username/mps/log
 # or any location that are accessible to the user
+```
+Then, start the MPS control daemon by running the command:
+```bash
+nvidia-cuda-mps-control -d
 ```
 
 2. After starting the daemon, `nvidia-smi` should show something like this:
