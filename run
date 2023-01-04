@@ -1,0 +1,1 @@
+docker run -it --rm -v $(pwd -P):/git/ --device=/dev/kfd --device=/dev/dri hip-ds
