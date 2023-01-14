@@ -1,4 +1,3 @@
-﻿
 // HiP driver & runtime
 #include "hip/hip_runtime.h"
 
@@ -13,6 +12,8 @@
 #include <numeric>
 #include <thread>
 #include <vector>
+#include <bitset>
+#include <mutex>
 
 #define hip_try(call)                                                               \
   do {                                                                              \
@@ -151,17 +152,71 @@ __global__ void consumer_kernel(uint32_t* data,
   }
 }
 
+constexpr uint32_t set_lower_nbits(const uint32_t k, const uint32_t n){
+  uint32_t output{0};
+  if( k > 0 ) {
+    output = (k | ((1 << n) - 1));
+  }
+  return output;
+}
+
+std::mutex mutex_;
+
+// sets the mask between [start, end)
+void set_cu_mask(std::vector<uint32_t>& mask, const uint32_t start, const uint32_t end){
+  std::lock_guard g(mutex_);
+  std::cout << std::dec << "Setting " << start  << " to " << end << std::endl;
+  //bitset is templated to 512
+  if(mask.size() > 4){
+    std::terminate();
+  }
+  std::bitset<128> bitset;
+  const uint32_t num_bits_per_mask = 32;
+  const uint32_t start_idx = start / num_bits_per_mask;
+  const uint32_t end_idx = (end + num_bits_per_mask - 1) / num_bits_per_mask;
+  const uint32_t length = end - start;
+
+  std::cout << "start_idx: " << start_idx << std::endl;
+  std::cout << "end_idx: " << end_idx << std::endl;
+  std::cout << "start: " << start << std::endl;
+  std::cout << "end: " << end << std::endl;
+
+  for(auto bit = start; bit < end; bit++){
+    bitset[bit] = true;
+  }
+
+  std::cout << std::hex << "bitset: 0b" << bitset.to_string() << '\n';
+
+  for (std::size_t i = start_idx; i < end_idx; ++i){
+    bitset >>= (i * num_bits_per_mask);
+    std::cout << std::hex << "bitset: 0b" << bitset.to_string() << '\n';
+    auto cur_bitset = bitset & 0xffffffff;
+    uint32_t cur_bits = cur_bitset.to_ulong();
+    mask[i] = cur_bits;
+  }
+
+  for(auto& m : mask){
+    std::cout << "mask: "<< std::hex << m << std::endl;
+  }
+}
+
 void test_producer_consumer(int argc, char** argv) {
   uint32_t count = (argc >= 2) ? std::atoi(argv[1]) : 100'000'000;
-  float producer_sms_ratio = (argc >= 3) ? std::atof(argv[2]) : 0.0125f;
-  float consumer_sms_ratio = (argc >= 4) ? std::atoi(argv[3]) : 1.0f - producer_sms_ratio;
+  // float producer_sms_ratio = (argc >= 3) ? std::atof(argv[2]) : 0.0125f;
+  // float consumer_sms_ratio = (argc >= 4) ? std::atoi(argv[3]) : 1.0f - producer_sms_ratio;
+
+  unsigned producer_sms = (argc >= 3) ? std::atoi(argv[2]) : 1;
+  unsigned consumer_sms = (argc >= 4) ? std::atoi(argv[3]) : 2;
 
   int device_id = 0;
   int sms_count = 0;
   hipDevice_t device = get_hip_device(device_id, sms_count);
+  const uint32_t num_bits_per_mask = 32;
+  const uint32_t num_cu_masks = (sms_count + num_bits_per_mask - 1) / num_bits_per_mask;
 
-  unsigned producer_sms = static_cast<unsigned>(producer_sms_ratio * sms_count);
-  unsigned consumer_sms = static_cast<unsigned>(consumer_sms_ratio * sms_count);
+
+  // unsigned producer_sms = static_cast<unsigned>(producer_sms_ratio * sms_count);
+  // unsigned consumer_sms = static_cast<unsigned>(consumer_sms_ratio * sms_count);
   producer_sms = std::max(producer_sms, 1u);
   consumer_sms = std::max(consumer_sms, 1u);
 
@@ -174,13 +229,13 @@ void test_producer_consumer(int argc, char** argv) {
   // CUexecAffinityParam_v1 consumer_affinity_param{
   //     CUexecAffinityType::CU_EXEC_AFFINITY_TYPE_SM_COUNT, consumer_sms};
 
-  auto affinity_flags = 0;
+  // auto affinity_flags = 0;
 
-  hipCtx_t producer_ctx, consumer_ctx;
-  std::cout << "Creating producer_ctx\n";
-  hip_try(hipCtxCreate(&producer_ctx, affinity_flags, device));
-  std::cout << "Creating consumer_ctx\n";
-  hip_try(hipCtxCreate(&consumer_ctx, affinity_flags, device));
+  // hipCtx_t producer_ctx, consumer_ctx;
+  // std::cout << "Creating producer_ctx\n";
+  // hip_try(hipCtxCreate(&producer_ctx, affinity_flags, device));
+  // std::cout << "Creating consumer_ctx\n";
+  // hip_try(hipCtxCreate(&consumer_ctx, affinity_flags, device));
 
   // Allocate memory
   uint32_t* data;
@@ -199,14 +254,29 @@ void test_producer_consumer(int argc, char** argv) {
 
   // producer kernel
   std::thread producer_thread{[&] {
-    hipCtxSetCurrent(producer_ctx);
-    producer_kernel<<<num_blocks, block_size>>>(data, flags, count, 512);
+    hipStream_t producer_stream;
+    std::vector<uint32_t> cu_mask(num_cu_masks, 0);
+    set_cu_mask(cu_mask, 0, producer_sms);
+    hip_try(hipExtStreamCreateWithCUMask(&producer_stream, cu_mask.size(), cu_mask.data()));
+    hip_try(hipExtStreamGetCUMask(producer_stream, cu_mask.size(), cu_mask.data()));
+    for(auto mask : cu_mask){
+      std::cout << std::hex << mask << std::endl;
+    }
+    // hipExtStreamCreateWithCUMask(producer_stream, );
+    // producer_kernel<<<num_blocks, block_size>>>(data, flags, count, 512);
   }};
 
   // consumer kernel
   std::thread consumer_thread{[&] {
-    hipCtxSetCurrent(consumer_ctx);
-    consumer_kernel<<<num_blocks, block_size>>>(data, flags, count, 512);
+    hipStream_t consumer_stream;
+    std::vector<uint32_t> cu_mask(num_cu_masks, 0);
+    set_cu_mask(cu_mask, producer_sms, producer_sms+ consumer_sms);
+    hip_try(hipExtStreamCreateWithCUMask(&consumer_stream, cu_mask.size(), cu_mask.data()));
+    hip_try(hipExtStreamGetCUMask(consumer_stream, cu_mask.size(), cu_mask.data()));
+    for(auto mask : cu_mask){
+      std::cout << std::hex << mask << std::endl;
+    }
+    // consumer_kernel<<<num_blocks, block_size>>>(data, flags, count, 512);
   }};
   producer_thread.join();
   consumer_thread.join();
@@ -220,8 +290,8 @@ void test_producer_consumer(int argc, char** argv) {
   hip_try(hipFree(data));
   hip_try(hipFree(flags));
 
-  hip_try(hipCtxDestroy(producer_ctx));
-  hip_try(hipCtxDestroy(consumer_ctx));
+  // hip_try(hipCtxDestroy(producer_ctx));
+  // hip_try(hipCtxDestroy(consumer_ctx));
 }
 
 int main(int argc, char** argv) {
